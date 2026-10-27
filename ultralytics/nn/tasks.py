@@ -62,6 +62,7 @@ from ultralytics.nn.modules import (
     LRPCHead,
     Pose,
     Pose26,
+    QMixBlock,
     RepC3,
     RepConv,
     RepNCSPELAN4,
@@ -72,6 +73,7 @@ from ultralytics.nn.modules import (
     Segment,
     Segment26,
     SemanticSegment,
+    SharedQuantumMixer,
     TorchVision,
     WorldDetect,
     YOLOEDetect,
@@ -2163,6 +2165,7 @@ def parse_model(d, ch, verbose=True):
             A2C2f,
         }
     )
+    shared_quantum_mixer = SharedQuantumMixer(max_dim=1024)
     for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args
         m = (
             getattr(torch.nn, m[3:])
@@ -2207,6 +2210,13 @@ def parse_model(d, ch, verbose=True):
                     args.extend((True, 1.2))
             if m is C2fCIB:
                 legacy = False
+        elif m is QMixBlock:
+            c1, c2 = ch[f], args[0]
+            c2 = make_divisible(min(c2, max_channels) * width, 8)
+            n = 1
+            reduction = args[1] if len(args) > 1 else 4
+            dual_pool = args[2] if len(args) > 2 else True
+            args = [c1, c2, reduction, shared_quantum_mixer, dual_pool]
         elif m is AIFI:
             args = [ch[f], *args]
         elif m in frozenset({HGStem, HGBlock}):

@@ -2112,3 +2112,83 @@ class RealNVP(nn.Module):
         z, log_det = self.backward_p(x)
         # Closed-form log N(z; 0, I) in 2-D; fp32 keeps z**2 from overflowing under AMP.
         return -0.5 * (z.float() ** 2).sum(-1) - math.log(2 * math.pi) + log_det
+
+
+class SharedQuantumMixer(nn.Module):
+    """Quantum-inspired shared variational phase-rotation mixer across backbone stages.
+
+     Holds a single shared bank of learnable frequency (`w`) and phase-shift (`theta`) parameters that multiple
+    `QMixBlock` stages slice dynamically according to their reduced latent dimension `r`.
+
+    Args:
+        max_dim (int): Maximum supported latent dimension for dynamic parameter slicing.
+    """
+
+    def __init__(self, max_dim: int = 1024):
+        """Initialize shared quantum mixer parameters `w` and `theta`."""
+        super().__init__()
+        self.max_dim = max_dim
+        self.w = nn.Parameter(torch.ones(1, max_dim))
+        self.theta = nn.Parameter(torch.zeros(1, max_dim))
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        """Apply sinusoidal quantum-inspired phase mixing with dynamic slicing along the channel dimension."""
+        r = z.shape[-1]
+        return torch.sin(z * self.w[:, :r] + self.theta[:, :r])
+
+
+class QMixBlock(nn.Module):
+    """Quantum-Inspired Shared Channel Mixing Block (QYOLO26).
+
+    Replaces heavy deep convolutional blocks in P4/P5 stages with lightweight dual global pooling (average + learnable
+    max pooling for small-object sensitivity), linear bottleneck projection, shared sinusoidal phase mixing, and
+    channel-wise recalibration.
+
+    Args:
+        c1 (int): Number of input channels.
+        c2 (int): Number of output channels.
+        reduction (int): Channel reduction factor for the latent space `r = max(1, c1 // reduction)`.
+        shared_mixer (SharedQuantumMixer | None): Shared quantum mixer instance across backbone stages.
+        dual_pool (bool): Whether to combine global average pooling with learnable global max pooling.
+    """
+
+    def __init__(
+        self,
+        c1: int,
+        c2: int,
+        reduction: int = 4,
+        shared_mixer: SharedQuantumMixer | None = None,
+        dual_pool: bool = True,
+    ):
+        """Initialize QMixBlock."""
+        super().__init__()
+        self.c1 = c1
+        self.c2 = c2
+        self.r = max(1, c1 // reduction)
+        self.dual_pool = dual_pool
+        if dual_pool:
+            self.pool_alpha = nn.Parameter(torch.tensor(0.2))
+        else:
+            self.register_parameter("pool_alpha", None)
+        self.fc1 = nn.Linear(c1, self.r, bias=False)
+        self.shared_mixer = shared_mixer if shared_mixer is not None else SharedQuantumMixer(max_dim=max(1024, self.r))
+        self.fc2 = nn.Linear(self.r, c2, bias=False)
+        self.act = nn.Sigmoid()
+        self.proj = Conv(c1, c2, 1) if c1 != c2 else nn.Identity()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass through the 5-stage QMixBlock."""
+        b = x.shape[0]
+        # Stage 1: Dual global pooling (GAP + learnable GMP for small objects)
+        y = x.mean(dim=(-2, -1))
+        if self.dual_pool and self.pool_alpha is not None:
+            y = y + self.pool_alpha * x.amax(dim=(-2, -1))
+        # Stage 2: Linear compression to latent space r
+        z = self.fc1(y)
+        # Stage 3: Entangled shared quantum phase mixing
+        z = self.shared_mixer(z)
+        # Stage 4: Linear expansion + Sigmoid gating
+        s = self.act(self.fc2(z))
+        # Stage 5: Channel-wise recalibration
+        return self.proj(x) * s.view(b, self.c2, 1, 1)
+
