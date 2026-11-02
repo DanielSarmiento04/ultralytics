@@ -97,6 +97,7 @@ def verify_entanglement_and_gradients(model: YOLO, scale_name: str) -> None:
     mixer = layer6.shared_mixer
     assert mixer.w.grad is not None, f"[{scale_name}] No gradient accumulated on shared_mixer.w"
     assert mixer.theta.grad is not None, f"[{scale_name}] No gradient accumulated on shared_mixer.theta"
+    assert mixer.entangle_beta.grad is not None, f"[{scale_name}] No gradient accumulated on shared_mixer.entangle_beta"
 
     # Active dimensions up to max(layer6.r, layer8.r) must have non-zero gradients, while unused tail stays zero
     max_r = max(layer6.r, layer8.r)
