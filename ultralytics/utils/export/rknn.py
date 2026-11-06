@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from ultralytics.utils import IS_COLAB, LOGGER, YAML
@@ -68,7 +69,21 @@ def onnx2rknn(
     LOGGER.info(f"\n{prefix} starting export with rknn-toolkit2...")
     # setuptools<82 retains pkg_resources, which rknn-toolkit2 depends on and setuptools 82 removed
     # <2.5: 2.5.0 fails YOLO11 and YOLO26 builds https://github.com/airockchip/rknn-toolkit2/issues/581
-    check_requirements(["rknn-toolkit2>=2.3.2,<2.5", "setuptools<82"])
+    # --no-deps: rknn-toolkit2 requires torch<=2.4.0 and opencv-python, which would replace the installed torch and cv2
+    check_requirements("rknn-toolkit2>=2.3.2,<2.5", cmds="--no-deps")
+    # numpy>=2.4 and protobuf>=7 fail rknn-toolkit2 builds; onnx and onnxruntime come from the preceding ONNX export
+    check_requirements(
+        [
+            "setuptools<82",
+            "numpy<2.4",
+            "protobuf<7",
+            "psutil>=5.9.0",
+            "scipy>=1.9.3",
+            "tqdm>=4.64.1",
+            "ruamel.yaml>=0.17.21",
+            "fast-histogram>=0.11",
+        ]
+    )
 
     if IS_COLAB:
         # Prevent 'exit' from closing the notebook https://github.com/airockchip/rknn-toolkit2/issues/259
@@ -77,9 +92,6 @@ def onnx2rknn(
         builtins.exit = lambda: None
 
     from rknn.api import RKNN
-
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     rknn = RKNN(verbose=False)
     config = {"mean_values": [[0, 0, 0]], "std_values": [[255, 255, 255]], "target_platform": name}
@@ -108,8 +120,10 @@ def onnx2rknn(
     if use_int8:
         build_kwargs.update(dataset=str(dataset), auto_hybrid=not int8_only)  # INT8-only NPUs have no FP16 layers
     _check_rknn_return(rknn.build(**build_kwargs, rknn_batch_size=batch), "build")
+    output_dir = Path(output_dir).resolve()  # rmtree refuses a symlinked directory
+    shutil.rmtree(output_dir, ignore_errors=True)  # a re-export would keep another chip's model and INT8 tail
+    output_dir.mkdir(parents=True)
     _check_rknn_return(rknn.export_rknn(str(output_dir / f"{Path(onnx_file).stem}-{name}.rknn")), "export_rknn")
-    (output_dir / "tail.onnx").unlink(missing_ok=True)  # a stale INT8 tail would corrupt a re-exported model
     if outputs:
         onnx.utils.extract_model(onnx_file, str(output_dir / "tail.onnx"), outputs, [x.name for x in graph.output])
     if metadata:

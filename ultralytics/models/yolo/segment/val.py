@@ -47,8 +47,8 @@ class SegmentationValidator(DetectionValidator):
         self.args.task = "segment"
         self.metrics = SegmentMetrics()
 
-    def preprocess(self, batch: dict[str, Any]) -> dict[str, Any]:
-        """Preprocess batch of images for YOLO segmentation validation.
+    def preprocess_targets(self, batch: dict[str, Any]) -> dict[str, Any]:
+        """Move segmentation targets to the device as float32.
 
         Args:
             batch (dict[str, Any]): Batch containing images and annotations.
@@ -56,7 +56,7 @@ class SegmentationValidator(DetectionValidator):
         Returns:
             (dict[str, Any]): Preprocessed batch.
         """
-        batch = super().preprocess(batch)
+        batch = super().preprocess_targets(batch)
         batch["masks"] = batch["masks"].float()
         return batch
 
@@ -70,7 +70,9 @@ class SegmentationValidator(DetectionValidator):
         if self.args.save_json:
             check_requirements("faster-coco-eval>=1.6.7")
         # More accurate vs faster
-        self.process = ops.process_mask_native if self.args.save_json or self.args.save_txt else ops.process_mask
+        self.process = (
+            ops.process_mask_native if self.args.save_json or self.args.save_txt or self.args.tile else ops.process_mask
+        )
 
     def get_desc(self) -> str:
         """Return a formatted description of evaluation metrics."""
@@ -160,7 +162,7 @@ class SegmentationValidator(DetectionValidator):
         if gt_cls.shape[0] == 0 or preds["cls"].shape[0] == 0:
             tp_m = np.zeros((preds["cls"].shape[0], self.niou), dtype=bool)
         else:
-            iou = mask_iou(batch["masks"].flatten(1), preds["masks"].flatten(1).float())  # float, uint8
+            iou = mask_iou(batch["masks"].flatten(1), preds["masks"].flatten(1))
             tp_m = self.match_predictions(preds["cls"], gt_cls, iou).cpu().numpy()
         tp.update({"tp_m": tp_m})  # update tp with mask IoU
         return tp
